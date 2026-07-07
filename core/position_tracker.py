@@ -2,10 +2,29 @@
 """
 Module khusus untuk melacak posisi (order) yang sedang terbuka di MT5.
 Terpisah agar mudah di-maintenance dan dikembangkan.
+Support Cloud (demo) & Lokal (MT5 real).
 """
-import MetaTrader5 as mt5
+
 import pandas as pd
 from datetime import datetime
+import os
+import streamlit as st
+
+# ============================================
+# DETEKSI ENVIRONMENT (Cloud vs Lokal)
+# ============================================
+IS_CLOUD = os.path.exists('/mount/src') or 'STREAMLIT_SERVER' in os.environ
+
+# Coba import MetaTrader5 (hanya akan sukses di Windows lokal)
+try:
+    import MetaTrader5 as mt5
+    MT5_AVAILABLE = True
+except ImportError:
+    MT5_AVAILABLE = False
+    mt5 = None
+    if IS_CLOUD:
+        print("ℹ️ Position Tracker: Cloud mode - fitur tracking posisi tidak tersedia")
+
 
 def get_open_positions(symbol: str = None) -> pd.DataFrame:
     """
@@ -18,6 +37,21 @@ def get_open_positions(symbol: str = None) -> pd.DataFrame:
     Returns:
         DataFrame berisi detail posisi, atau DataFrame kosong jika tidak ada posisi.
     """
+    # ==========================================
+    # MODE CLOUD: Return DataFrame kosong
+    # ==========================================
+    if not MT5_AVAILABLE:
+        # Return DataFrame kosong dengan struktur kolom yang sama
+        # agar tidak error di UI
+        return pd.DataFrame(columns=[
+            'ticket', 'symbol', 'type_str', 'volume', 
+            'price_open', 'price_current', 'sl', 'tp', 
+            'profit', 'profit_pips', 'time_open', 'duration'
+        ])
+
+    # ==========================================
+    # MODE LOKAL: Pakai MetaTrader5
+    # ==========================================
     if symbol:
         positions = mt5.positions_get(symbol=symbol)
     else:
@@ -70,6 +104,20 @@ def get_portfolio_summary() -> dict:
     """
     Mengambil ringkasan cepat keseluruhan portofolio (Floating P/L, Total Posisi).
     """
+    # ==========================================
+    # MODE CLOUD: Return data kosong
+    # ==========================================
+    if not MT5_AVAILABLE:
+        return {
+            'total_positions': 0, 
+            'total_profit': 0.0, 
+            'buy_count': 0, 
+            'sell_count': 0
+        }
+
+    # ==========================================
+    # MODE LOKAL: Pakai MetaTrader5
+    # ==========================================
     positions = mt5.positions_get()
     
     if positions is None or len(positions) == 0:
