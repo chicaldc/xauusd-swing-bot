@@ -7,7 +7,7 @@ BARS_TO_FETCH = 100
 SIGNAL_VALIDITY_CANDLES = 3
 
 # Interval auto-refresh (ms)
-AUTO_REFRESH_INTERVAL_MS = 10000
+AUTO_REFRESH_INTERVAL_MS = 60000
 
 # Default timeframe aktif
 DEFAULT_TIMEFRAMES = ["M15", "M30", "H1", "H4"]
