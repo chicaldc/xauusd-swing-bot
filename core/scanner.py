@@ -3,6 +3,7 @@ core/scanner.py
 Orchestrator Streamlit khusus Swing Strategy dengan Notifikasi Suara & Anti-Spam per Candle
 + ADX/DI terintegrasi di DiCrossDetector
 + ✅ ADX-R sebagai Early Warning (bisa trigger tanpa swing)
++ ✅ FIX: Anti-spam yang proper + get_current_candle_time() yang benar
 """
 import streamlit as st
 import pandas as pd
@@ -41,6 +42,48 @@ def play_alert_sound():
     add_log("🔊 Audio alert ditandai untuk diputar di browser")
 
 
+# ==========================================================
+# ✅ FIX: ANTI-SPAM LOGIC
+# ==========================================================
+def _should_alert(symbol: str, tf_name: str, candle_key: str, direction: str, sinyal: str) -> bool:
+    """
+    Logika anti-spam yang cerdas:
+    - 1 alert per candle per pair+TF
+    - Jika sinyal SAMA di candle yang sama → JANGAN alert
+    - Jika sinyal BERGANTI → boleh alert lagi
+    """
+    if 'alert_history' not in st.session_state:
+        st.session_state.alert_history = {}
+    
+    history_key = f"{symbol}_{tf_name}"
+    
+    # Cek apakah sudah pernah alert di candle ini
+    if history_key in st.session_state.alert_history:
+        last_alert = st.session_state.alert_history[history_key]
+        last_candle_key = last_alert.get('candle_key')
+        last_sinyal = last_alert.get('sinyal')
+        last_direction = last_alert.get('direction')
+        
+        # Jika candle SAMA dan sinyal SAMA → JANGAN alert lagi
+        if last_candle_key == candle_key:
+            return False
+        
+        # Jika sinyal SAMA (arah sama) → cek cooldown
+        if last_direction == direction and last_sinyal == sinyal:
+            # Conservative: jangan alert jika sinyal sama meski candle berbeda
+            return False
+    
+    # Boleh alert - simpan history
+    st.session_state.alert_history[history_key] = {
+        'candle_key': candle_key,
+        'sinyal': sinyal,
+        'direction': direction,
+        'timestamp': pd.Timestamp.now()
+    }
+    
+    return True
+
+
 def check_expiration(key: str, saved_time_str: str, df: pd.DataFrame, validity_candles: int) -> bool:
     """Cek apakah sinyal masih valid berdasarkan batas waktu (aturan N candle)."""
     if validity_candles >= 999:
@@ -67,15 +110,26 @@ def check_expiration(key: str, saved_time_str: str, df: pd.DataFrame, validity_c
 
 
 def get_current_candle_time(df: pd.DataFrame) -> str:
-    """Mengambil waktu Open dari candle yang sedang berjalan."""
+    """
+    Mengambil waktu Open dari candle yang SEDANG BERJALAN (terbaru).
+    
+    ✅ FIX: Menggunakan iloc[-1] untuk ambil candle terakhir,
+    bukan iloc[0] yang mengambil candle paling lama.
+    """
     try:
+        if df is None or len(df) == 0:
+            return "unknown"
+        
+        # ✅ Data dari fetch_ohlcv() di-return ascending (lama → baru)
+        # Jadi candle terbaru ada di index -1 (paling akhir)
         if 'time_str' in df.columns:
-            return str(df.iloc[0]['time_str'])
+            return str(df.iloc[-1]['time_str'])  # ✅ FIX: -1 bukan 0
         elif df.index.name and 'time' in str(df.index.name).lower():
-            return str(df.index[0])
+            return str(df.index[-1])  # ✅ FIX
         else:
-            return str(df.index[0])
-    except Exception:
+            return str(df.index[-1])  # ✅ FIX
+    except Exception as e:
+        add_log(f"⚠️ Error get_current_candle_time: {e}")
         return "unknown"
 
 
@@ -162,6 +216,7 @@ def scan_once(symbols, timeframes, scan_xauusd_only=False, adx_period=14, adx_th
     4. Info tetap ditampilkan meski harga keluar zona (jangan dihapus).
     5. ADX/DI dihitung otomatis via DiCrossDetector.analyze()
     6. ✅ ADX-R bisa trigger sinyal sendiri (Early Warning) jika mode dipilih
+    7. ✅ FIX: Anti-spam yang proper
     """
 
     ok, msg = initialize_mt5()
@@ -175,6 +230,8 @@ def scan_once(symbols, timeframes, scan_xauusd_only=False, adx_period=14, adx_th
         st.session_state.notified_signals = set()
     if 'notified_new_swings' not in st.session_state:
         st.session_state.notified_new_swings = set()
+    if 'alert_history' not in st.session_state:
+        st.session_state.alert_history = {}
 
     # LOGIKA PEMILIHAN SIMBOL
     if scan_xauusd_only:
@@ -305,20 +362,27 @@ def scan_once(symbols, timeframes, scan_xauusd_only=False, adx_period=14, adx_th
                         f"| ADX:{new_swing_data['adx']:.1f} ({new_swing_data['adx_status']}) | {new_swing_data['bonus_status']}"
                     )
 
+                    # ✅ RESET alert history karena sinyal berganti
+                    history_key = f"{symbol}_{tf_name}"
+                    if history_key in st.session_state.alert_history:
+                        del st.session_state.alert_history[history_key]
+                        add_log(f"🔄 {symbol} [{tf_name}] Alert history direset (sinyal berganti)")
+
                     # ✅ Jika ada ADX-R early warning di pair+TF yang sama, hapus karena sudah ada swing
                     if adx_r_key in st.session_state.active_swings:
                         del st.session_state.active_swings[adx_r_key]
                         st.session_state.notified_new_swings.discard(adx_r_key)
 
-                    can_alert = candle_key not in st.session_state.notified_signals
-                    if new_swing_data['in_zone'] and can_alert:
-                        play_alert_sound()
-                        add_log(
-                            f"🚨 {symbol} [{tf_name}] {fresh_result['sinyal']} LANGSUNG MASUK ZONA! "
-                            f"| ADX:{new_swing_data['adx']:.1f} ({new_swing_data['adx_status']}) | "
-                            f"{new_swing_data['bonus_status']} 🔊"
-                        )
-                        st.session_state.notified_signals.add(candle_key)
+                    # ✅ FIX: Pakai _should_alert() untuk anti-spam
+                    if new_swing_data['in_zone']:
+                        if _should_alert(symbol, tf_name, candle_key, new_direction, fresh_result['sinyal']):
+                            play_alert_sound()
+                            add_log(
+                                f"🚨 {symbol} [{tf_name}] {fresh_result['sinyal']} LANGSUNG MASUK ZONA! "
+                                f"| ADX:{new_swing_data['adx']:.1f} ({new_swing_data['adx_status']}) | "
+                                f"{new_swing_data['bonus_status']} 🔊"
+                            )
+                            st.session_state.notified_signals.add(candle_key)
 
                     continue
 
@@ -357,15 +421,15 @@ def scan_once(symbols, timeframes, scan_xauusd_only=False, adx_period=14, adx_th
                 swing_data['bonus_status'] = bonus_status
                 swing_data['last_candle_key'] = candle_key
 
-                can_alert = candle_key not in st.session_state.notified_signals
-
-                if in_zone and can_alert:
-                    play_alert_sound()
-                    add_log(
-                        f"🚨 {symbol} [{tf_name}] {swing_data['sinyal']} MASUK ZONA! "
-                        f"| ADX:{di_info['adx']:.1f} ({di_info['adx_status']}) | {bonus_status} 🔊"
-                    )
-                    st.session_state.notified_signals.add(candle_key)
+                # ✅ FIX: Pakai _should_alert() untuk anti-spam
+                if in_zone:
+                    if _should_alert(symbol, tf_name, candle_key, direction, swing_data['sinyal']):
+                        play_alert_sound()
+                        add_log(
+                            f"🚨 {symbol} [{tf_name}] {swing_data['sinyal']} MASUK ZONA! "
+                            f"| ADX:{di_info['adx']:.1f} ({di_info['adx_status']}) | {bonus_status} 🔊"
+                        )
+                        st.session_state.notified_signals.add(candle_key)
 
             # =========================================================
             # B. JIKA BELUM ADA SWING AKTIF (MENCARI SWING BARU)
@@ -395,14 +459,15 @@ def scan_once(symbols, timeframes, scan_xauusd_only=False, adx_period=14, adx_th
                         del st.session_state.active_swings[adx_r_key]
                         st.session_state.notified_new_swings.discard(adx_r_key)
 
-                    can_alert = candle_key not in st.session_state.notified_signals
-                    if swing_data['in_zone'] and can_alert:
-                        play_alert_sound()
-                        add_log(
-                            f"🚨 {symbol} [{tf_name}] {result['sinyal']} LANGSUNG MASUK ZONA! "
-                            f"| ADX:{swing_data['adx']:.1f} ({swing_data['adx_status']}) | {swing_data['bonus_status']} 🔊"
-                        )
-                        st.session_state.notified_signals.add(candle_key)
+                    # ✅ FIX: Pakai _should_alert() untuk anti-spam
+                    if swing_data['in_zone']:
+                        if _should_alert(symbol, tf_name, candle_key, direction, result['sinyal']):
+                            play_alert_sound()
+                            add_log(
+                                f"🚨 {symbol} [{tf_name}] {result['sinyal']} LANGSUNG MASUK ZONA! "
+                                f"| ADX:{swing_data['adx']:.1f} ({swing_data['adx_status']}) | {swing_data['bonus_status']} 🔊"
+                            )
+                            st.session_state.notified_signals.add(candle_key)
 
     cleanup_old_notifications(symbols_to_scan, timeframes)
     add_log(f"✅ Scan selesai. Sinyal aktif: {len(st.session_state.active_swings)}")
@@ -434,9 +499,9 @@ def cleanup_old_notifications(active_symbols: list, timeframes: list):
             recent_candles = set()
             for i in range(min(2, len(df))):
                 if 'time_str' in df.columns:
-                    recent_candles.add(str(df.iloc[i]['time_str']))
+                    recent_candles.add(str(df.iloc[-(i+1)]['time_str']))  # ✅ FIX: iloc[-(i+1)]
                 else:
-                    recent_candles.add(str(df.index[i]))
+                    recent_candles.add(str(df.index[-(i+1)]))  # ✅ FIX
 
             candle_time_in_key = parts[2].replace('_EXTREME', '')
             if candle_time_in_key not in recent_candles:
