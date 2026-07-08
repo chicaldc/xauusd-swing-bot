@@ -7,7 +7,7 @@ import numpy as np
 
 
 class DiCrossDetector:
-    def __init__(self, period: int = 14, lookback: int = 4, di_threshold: float = 20.0):
+    def __init__(self, period: int = 14, lookback: int = 4, di_threshold: float = 15.0):
         self.period = period
         self.lookback = lookback
         self.di_threshold = di_threshold  # ✅ Threshold untuk ADX in Range
